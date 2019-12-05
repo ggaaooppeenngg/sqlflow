@@ -15,6 +15,7 @@ package sql
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"reflect"
 	"strings"
@@ -23,11 +24,84 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-// hive column type ends with _TYPE
-const hiveCTypeSuffix = "_TYPE"
+const (
+	// hive column type ends with _TYPE
+	hiveCTypeSuffix = "_TYPE"
+
+	timeFormat = "2006-01-02 15:04:05.999999"
+)
 
 func createByType(t reflect.Type) interface{} {
 	return reflect.New(t).Interface()
+}
+
+// Copied from github.com/go-sql-driver/mysql
+type NullTime struct {
+	Time  time.Time
+	Valid bool // Valid is true if Time is not NULL
+}
+
+// Scan implements the Scanner interface.
+// The value type must be time.Time or string / []byte (formatted time-string),
+// otherwise Scan fails.
+func (nt *NullTime) Scan(value interface{}) (err error) {
+	if value == nil {
+		nt.Time, nt.Valid = time.Time{}, false
+		return
+	}
+
+	switch v := value.(type) {
+	case time.Time:
+		nt.Time, nt.Valid = v, true
+		return
+	case []byte:
+		nt.Time, err = parseDateTime(string(v), time.UTC)
+		nt.Valid = (err == nil)
+		return
+	case string:
+		// Handle NULL timestamp from hive
+		if v == "" {
+			nt.Time, nt.Valid = time.Time{}, false
+			return
+		}
+		nt.Time, err = parseDateTime(v, time.UTC)
+		nt.Valid = (err == nil)
+		return
+	}
+
+	nt.Valid = false
+	return fmt.Errorf("Can't convert %T to time.Time", value)
+}
+
+// Value implements the driver Valuer interface.
+func (nt NullTime) Value() (driver.Value, error) {
+	if !nt.Valid {
+		return nil, nil
+	}
+	return nt.Time, nil
+}
+
+func parseDateTime(str string, loc *time.Location) (t time.Time, err error) {
+	base := "0000-00-00 00:00:00.0000000"
+	switch len(str) {
+	case 10, 19, 21, 22, 23, 24, 25, 26: // up to "YYYY-MM-DD HH:MM:SS.MMMMMM"
+		if str == base[:len(str)] {
+			return
+		}
+		t, err = time.Parse(timeFormat[:len(str)], str)
+	default:
+		err = fmt.Errorf("invalid time string: %s", str)
+		return
+	}
+
+	// Adjust location
+	if err == nil && loc != time.UTC {
+		y, mo, d := t.Date()
+		h, mi, s := t.Clock()
+		t, err = time.Date(y, mo, d, h, mi, s, t.Nanosecond(), loc), nil
+	}
+
+	return
 }
 
 func parseVal(val interface{}) (interface{}, error) {
@@ -58,6 +132,12 @@ func parseVal(val interface{}) (interface{}, error) {
 		}
 		return nil, nil
 	case *mysql.NullTime:
+		if (*v).Valid {
+			return (*v).Time, nil
+		}
+		return nil, nil
+	// hive  time
+	case *NullTime:
 		if (*v).Valid {
 			return (*v).Time, nil
 		}

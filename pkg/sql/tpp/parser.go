@@ -118,7 +118,7 @@ func javaParseAndSplit(typ, sql string) ([]string, int, error) {
 	}
 
 	cmd := exec.Command("java",
-		"-cp", "/opt/sqlflow/parser/parser-1.0-SNAPSHOT-jar-with-dependencies.jar",
+		"-cp", "java/parser/target//parser-1.0-SNAPSHOT-jar-with-dependencies.jar",
 		"org.sqlflow.parser.ParserAdaptorCmd",
 		"-p", typ,
 		"-i", inputFile,
